@@ -1,11 +1,11 @@
-// image_pthreads.c
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdint.h>
-#include <time.h>
 #include <string.h>
 #include <stdlib.h>
-#define _POSIX_C_SOURCE 200809L
 #include <time.h>
+#include <sys/time.h>  
 #include <pthread.h>
 #include <unistd.h>
 #include "image.h"
@@ -16,7 +16,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-// Same kernels as baseline
 static Matrix algorithms[] = {
     {{0,-1,0},{-1,4,-1},{0,-1,0}},                                      // EDGE
     {{0,-1,0},{-1,5,-1},{0,-1,0}},                                      // SHARPEN
@@ -26,19 +25,12 @@ static Matrix algorithms[] = {
     {{0,0,0},{0,1,0},{0,0,0}}                                           // IDENTITY
 };
 
-// ---- Baseline helper from image.c (unchanged) ----
 uint8_t getPixelValue(Image* srcImage,int x,int y,int bit,Matrix algorithm){
-    int px,mx,py,my;
-    // clamp neighbors at edges
-    px=x+1; py=y+1; mx=x-1; my=y-1;
+    int px=x+1, mx=x-1, py=y+1, my=y-1;
     if (mx<0) mx=0;
     if (my<0) my=0;
-    if (px>=srcImage->width) px=srcImage->width-1;
+    if (px>=srcImage->width)  px=srcImage->width-1;
     if (py>=srcImage->height) py=srcImage->height-1;
-
-    // compute convolution and cast to uint8_t (same behavior as baseline)
-    int idx = 0; // just to keep symmetry with macro calls
-    (void)idx;
 
     double sum =
         algorithm[0][0]*srcImage->data[Index(mx,my,srcImage->width,bit,srcImage->bpp)]+
@@ -51,8 +43,7 @@ uint8_t getPixelValue(Image* srcImage,int x,int y,int bit,Matrix algorithm){
         algorithm[2][1]*srcImage->data[Index(x ,py,srcImage->width,bit,srcImage->bpp)]+
         algorithm[2][2]*srcImage->data[Index(px,py,srcImage->width,bit,srcImage->bpp)];
 
-    // Keep exact baseline semantics: truncate by casting (no explicit clamp)
-    if (sum < 0.0) sum = 0.0;             // optional mild guard to prevent UB in cast
+    if (sum < 0.0) sum = 0.0;
     if (sum > 255.0) sum = 255.0;
     return (uint8_t)sum;
 }
@@ -71,7 +62,6 @@ static void* worker_fn(void* arg) {
     Image* src = w->src;
     Image* dest = w->dest;
     Matrix K;
-    // copy kernel to a local variable (tiny, helps cache locality)
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) K[i][j] = w->kernel[i][j];
 
     for (int row = w->start_row; row < w->end_row; row++) {
@@ -86,7 +76,7 @@ static void* worker_fn(void* arg) {
 }
 
 // ---- Utilities / CLI ----
- int Usage(){
+int Usage(){
     printf("Usage: image_pthreads <filename> <type> [threads]\n");
     printf("  type: edge | sharpen | blur | gauss | emboss | identity\n");
     printf("  threads (optional): number of worker threads (default = cores)\n");
@@ -102,15 +92,11 @@ enum KernelTypes GetKernelType(char* type){
     else return IDENTITY;
 }
 
-// Prefer high-res timer so you can see thread speedups even for small images
+// Portable timer for Darwin (no -lrt needed)
 static double now_seconds() {
-    struct timespec ts;
-#if defined(CLOCK_MONOTONIC)
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-#else
-    clock_gettime(CLOCK_REALTIME, &ts);
-#endif
-    return ts.tv_sec + ts.tv_nsec*1e-9;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + tv.tv_usec * 1e-6;
 }
 
 int main(int argc, char** argv) {
@@ -183,7 +169,6 @@ int main(int argc, char** argv) {
 
         if (pthread_create(&tids[t], NULL, worker_fn, &args[t]) != 0) {
             fprintf(stderr, "pthread_create failed on thread %d\n", t);
-            // Join any already created threads, then abort
             for (int k=0;k<t;k++) pthread_join(tids[k], NULL);
             free(tids); free(args);
             free(dest.data);
